@@ -1,1 +1,22 @@
-[{"name":"1-start.jpg","query":"?shot=start&seed=1"},{"name":"2-play.jpg","query":"?shot=play&seed=3"},{"name":"3-buy.jpg","query":"?shot=buy&seed=5"},{"name":"4-end.jpg","query":"?shot=end&seed=1"}]
+[
+  {
+    "name": "1-start.jpg",
+    "query": "?shot=start&seed=1",
+    "notes": "Title screen: main menu overlay over the dusk solar yard, Vanguard vs Jackals team select visible."
+  },
+  {
+    "name": "2-play.jpg",
+    "query": "?shot=play&seed=3",
+    "notes": "Mid-round firefight: player aiming down the A-long lane, ally and enemy bots in view, HUD ammo and timer live."
+  },
+  {
+    "name": "3-buy.jpg",
+    "query": "?shot=buy&seed=5",
+    "notes": "Buy phase: weapon shop open with prices and economy readout, player choosing a loadout before the round starts."
+  },
+  {
+    "name": "4-end.jpg",
+    "query": "?shot=end&seed=1",
+    "notes": "Round end: VANGUARD WINS THE ROUND banner over the yard, scoreboard and round summary visible."
+  }
+]
