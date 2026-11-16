@@ -26,6 +26,7 @@ export const BINDINGS = Object.freeze({
   slots: ['Digit1', 'Digit2', 'Digit3'],
   grenade: ['KeyG'],
   plantDefuse: ['KeyE'],
+  aim: ['Mouse2'], // hold right mouse to aim down sights
   mute: ['KeyM'],
   minimapZoom: ['KeyN'],
   fire: ['Mouse0'],
@@ -59,6 +60,7 @@ export function createInput(canvas, onLockChange) {
     keys,
     locked: false,
     firing: false,
+    aiming: false, // true while the right mouse button is held (aim down sights)
     lookX: 0,
     lookY: 0,
     // True while Alt is held (derived from the key set, so it can never go
@@ -91,12 +93,13 @@ export function createInput(canvas, onLockChange) {
     }
   }
 
-  // Release every held key, the trigger and any pending look delta. Used
+  // Release every held key, the trigger, the aim and any pending look delta. Used
   // whenever input can no longer be trusted: window blur, pointer-lock loss.
   function releaseAll() {
     keys.clear();
     pressed.clear();
     state.firing = false;
+    state.aiming = false;
     state.lookX = 0;
     state.lookY = 0;
   }
@@ -123,9 +126,14 @@ export function createInput(canvas, onLockChange) {
       noteActivity();
       state.firing = true;
     }
+    if (state.locked && event.button === 2) {
+      noteActivity();
+      state.aiming = true;
+    }
   });
   window.addEventListener('mouseup', (event) => {
     if (event.button === 0) state.firing = false;
+    if (event.button === 2) state.aiming = false;
   });
   document.addEventListener('pointerlockchange', () => {
     state.locked = document.pointerLockElement === canvas;

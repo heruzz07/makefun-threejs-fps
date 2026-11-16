@@ -100,7 +100,9 @@ function drawFrame(now) {
   const state = game.state;
   advanceSim(dt);
   syncCamera();
-  if (state.player) render.updateBots(state.bots);
+  // Aim-down-sights target for the renderer (eases the FOV and viewmodel).
+  render.setAdsTarget(state.player && state.player.aiming ? 1 : 0);
+  if (state.player) render.updateBots(state.bots, dt);
   render.updateFx(dt, state.time);
   render.render();
   game.refreshHud();

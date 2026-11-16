@@ -53,10 +53,13 @@ export function reloadProgress(w, now) {
   return Math.min(1, Math.max(0, 1 - left / total));
 }
 
-// Current spread (radians) for a shot: base, plus movement penalty, minus crouch bonus.
-export function currentSpread(w, moving, crouching) {
+// Current spread (radians) for a shot: base, plus movement penalty, minus crouch
+// bonus, and nearly halved while aiming down sights (the ADS trade-off: steady
+// aim for slower movement, see config.js).
+export function currentSpread(w, moving, crouching, aiming) {
   let s = w.def.spread + (moving ? w.def.spreadMove : 0);
   if (crouching) s *= 0.6;
+  if (aiming) s *= 0.55;
   return s;
 }
 

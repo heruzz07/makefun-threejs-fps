@@ -9,8 +9,25 @@
 // crossing the open mid. Plus more cover crates and containers, a third solar-panel
 // row inside Site A, and pump machinery (a tank) outside Site B.
 export const SITES = {
-  A: { id: 'A', name: 'Array', x: 24, z: -14, r: 5 },
-  B: { id: 'B', name: 'Pump', x: -24, z: -14, r: 5 },
+  // Each site has its own colour so the yard reads at a glance: Site A is teal,
+  // Site B is amber. The ground rings, the minimap rings and the site letters
+  // all use the same colour, so a callout ("amber site") matches what you see.
+  A: { id: 'A', name: 'Array', x: 24, z: -14, r: 5, color: 0x2fd4c4, css: '#2fd4c4' },
+  B: { id: 'B', name: 'Pump', x: -24, z: -14, r: 5, color: 0xf0a830, css: '#f0a830' },
+};
+
+// Where defenders rally before a retake: just outside each site on the approach,
+// close enough to push in together, far enough not to be seen from inside the site.
+export const STAGING = {
+  A: { x: 24, z: -6 },
+  B: { x: -24, z: -6 },
+};
+
+// Where a retaking defender drops its smoke: the site entrance, so the cloud
+// sits between the planter and the door the defenders come through.
+export const SITE_ENTRANCE = {
+  A: { x: 24, z: -8 },
+  B: { x: -24, z: -8 },
 };
 
 export const SPAWNS = {

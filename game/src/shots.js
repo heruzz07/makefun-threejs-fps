@@ -90,6 +90,12 @@ export function runShot(name, ctx) {
     setTimeout(() => document.getElementById('hitmarker').classList.add('on'), 300);
     // One enemy tracer back at the player, for a two-way firefight read.
     render.spawnTracer({ x: -3, y: 1.35, z: -10 }, { x: 0.4, y: 1.4, z: 11 }, 0xff9a5a);
+    // The yard mid-fight: a smoke cloud blooming across the Connector and a
+    // frag arcing in from a Jackal, so the frame reads as a live round — utility
+    // in the air, not just two guns. The frag hangs high against the dusk sky
+    // (top of its arc) so it silhouettes instead of vanishing against the sand.
+    render.addSmoke(-2, -4);
+    state.grenades.push({ kind: 'frag', x: 0.7, y: 2.6, z: 8.5, vx: 0, vy: 0, vz: 0, fuse: 5 });
   } else if (name === 'buy') {
     // Buy phase: menu open, $1,250 in hand, yard behind it. Step a few metres up
     // from spawn so the ally bots are behind the camera, out of frame.

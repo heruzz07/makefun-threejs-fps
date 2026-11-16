@@ -49,6 +49,7 @@ export function createGame(deps) {
     score: { vanguard: 0, jackals: 0 },
     money: CFG.startMoney,
     kills: 0, deaths: 0,
+    lossStreak: 0, // consecutive rounds lost (drives the loss-streak bonus)
     roundKills: 0, // player kills this round (for the round-end recap)
     roundBotKills: {}, // bot name -> kills this round
     roundHistory: [], // 'vanguard' | 'jackals' per finished round, oldest first
@@ -146,6 +147,13 @@ export function createGame(deps) {
       row.classList.toggle('cant', !owned && !afford);
     }
     setText('buy-money', `$${state.money}`);
+    // Loss streak: what a loss would pay right now, so the buy decision can
+    // weigh an eco round against a force buy.
+    const table = CFG.lossBonusStreak;
+    const nextLoss = table[Math.min(state.lossStreak + 1, table.length) - 1];
+    setText('buy-streak', state.lossStreak > 0
+      ? `Lose streak ×${state.lossStreak} — next loss pays $${nextLoss}`
+      : `No lose streak — a loss pays $${table[0]}`);
   }
 
   function buyItem(item) {
@@ -222,6 +230,7 @@ export function createGame(deps) {
     state.money = CFG.startMoney;
     state.kills = 0;
     state.deaths = 0;
+    state.lossStreak = 0;
     state.roundKills = 0;
     state.roundBotKills = {};
     state.roundHistory = [];
@@ -286,7 +295,17 @@ export function createGame(deps) {
     state.score[winner] += 1;
     state.roundHistory.push(winner);
     const playerWon = winner === 'vanguard';
-    state.money += playerWon ? CFG.winBonus : CFG.lossBonus;
+    // Loss streak: a win resets the streak and pays the flat win bonus; a loss
+    // lengthens the streak and pays the streak table (150 / 200 / 250 / 300),
+    // so a team on a losing run can still buy back into the match.
+    if (playerWon) {
+      state.lossStreak = 0;
+      state.money += CFG.winBonus;
+    } else {
+      state.lossStreak += 1;
+      const table = CFG.lossBonusStreak;
+      state.money += table[Math.min(state.lossStreak, table.length) - 1];
+    }
     const name = TEAMS[winner].name.toUpperCase();
     // Round-end slow motion: the world keeps moving, but every effect decays
     // slowly while the banner and the recap sink in.
@@ -354,8 +373,8 @@ export function createGame(deps) {
     }
     const eyeY = p.y + p.eye;
     fromV.set(p.x, eyeY, p.z);
-    // Camera forward + spread jitter.
-    const spread = currentSpread(w, p.moving, p.crouching);
+    // Camera forward + spread jitter (aiming tightens the cone).
+    const spread = currentSpread(w, p.moving, p.crouching, p.aiming);
     render.camera.getWorldDirection(dirV);
     dirV.x += (rng() * 2 - 1) * spread;
     dirV.y += (rng() * 2 - 1) * spread;
@@ -494,16 +513,17 @@ export function createGame(deps) {
     }
     // A bot lobs from chest height toward a known position: a flat, fast arc so
     // the grenade lands where the bot last saw someone, not at its own feet.
+    // Frags fuse on impact timing; smokes pop shortly after landing.
     const b = fromBot;
     const dx = fromBot.tx - b.x;
     const dz = fromBot.tz - b.z;
     const dist = Math.hypot(dx, dz) || 1;
     const speed = Math.min(15, 6 + dist * 0.55);
     state.grenades.push({
-      kind: 'frag',
+      kind,
       x: b.x, y: 1.35, z: b.z,
       vx: (dx / dist) * speed, vy: 4.2, vz: (dz / dist) * speed,
-      fuse: CFG.fragFuse,
+      fuse: kind === 'frag' ? CFG.fragFuse : 0.9,
     });
     audio.grenadeThrow();
   }
@@ -516,6 +536,10 @@ export function createGame(deps) {
     state.time += dt;
     const p = state.player;
     if (!p) return;
+    // Aim-down-sights state comes from the input module every step (right mouse
+    // held while alive, live play only); render reads it back for the FOV and
+    // viewmodel, and the sim reads it for spread, speed and look sensitivity.
+    p.aiming = input.state.aiming && p.alive && state.phase === 'playing';
     applyLook(dt);
     if (state.phase === 'buy') {
       stepBuyPhase(dt);
@@ -531,13 +555,15 @@ export function createGame(deps) {
   }
 
   // Mouse look, consumed once per step so deltas never double-apply, plus the
-  // slow recoil recovery that pulls the view back down after a shot.
+  // slow recoil recovery that pulls the view back down after a shot. Aiming
+  // down sights steadies the look (a slower sensitivity) for precise shots.
   function applyLook(dt) {
     const p = state.player;
     const look = input.takeLook();
+    const sens = p.aiming ? 0.0022 * CFG.adsLookMult : 0.0022;
     if (state.phase === 'playing' || state.phase === 'buy') {
-      p.yaw -= look.x * 0.0022;
-      p.pitch -= look.y * 0.0022;
+      p.yaw -= look.x * sens;
+      p.pitch -= look.y * sens;
       if (p.pitch > 1.5) p.pitch = 1.5;
       if (p.pitch < -1.5) p.pitch = -1.5;
     }
@@ -596,7 +622,9 @@ export function createGame(deps) {
     if (keys.has('KeyA')) { wishX += -cos; wishZ += sin; }
     if (keys.has('KeyD')) { wishX += cos; wishZ += -sin; }
     const wishLen = Math.hypot(wishX, wishZ);
-    const speedCap = CFG.walkSpeed * weapon().def.speed * (crouchKey ? 0.55 : 1);
+    // Aiming down sights slows the player down — the steady-aim trade-off.
+    const aimMult = p.aiming ? CFG.adsSpeedMult : 1;
+    const speedCap = CFG.walkSpeed * weapon().def.speed * (crouchKey ? 0.55 : 1) * aimMult;
     if (wishLen > 0.01) {
       wishX /= wishLen;
       wishZ /= wishLen;
@@ -793,7 +821,7 @@ export function createGame(deps) {
         // Telegraph: the bot is about to lob a frag at a position it last saw.
         killfeedAdd(`<b class="${a.bot.team}">${a.bot.name}</b> is lobbing a frag — move!`);
       } else if (a.type === 'throw') {
-        throwGrenade('frag', { x: a.bot.x, z: a.bot.z, tx: a.tx, tz: a.tz });
+        throwGrenade(a.kind || 'frag', { x: a.bot.x, z: a.bot.z, tx: a.tx, tz: a.tz });
       } else if (a.type === 'plant-done') {
         state.spike = { planted: true, site: a.site, x: a.bot.x, z: a.bot.z, timer: CFG.spikeTime, channel: 0, channelKind: null };
         render.setSpike(a.bot.x, a.bot.z, true);
@@ -881,8 +909,8 @@ export function createGame(deps) {
         }
       }
     }
-    // Crosshair gap grows with spread.
-    const gap = 3 + currentSpread(w, p.moving, p.crouching) * 900;
+    // Crosshair gap grows with spread (and shrinks while aiming).
+    const gap = 3 + currentSpread(w, p.moving, p.crouching, p.aiming) * 900;
     const ch = $('crosshair');
     if (ch) ch.style.setProperty('--gap', `${gap.toFixed(1)}px`);
     // Spike status + countdown bar.
@@ -958,8 +986,23 @@ export function createGame(deps) {
       get round() { return state.round; },
       get score() { return state.score; },
       get money() { return state.money; },
+      get lossStreak() { return state.lossStreak; },
       get bots() { return state.bots; },
       get player() { return state.player; },
+      // Aim-down-sights for tests: sets the input aim flag the sim reads each step.
+      setAds(on) { input.state.aiming = !!on; },
+      // Camera field of view (74 hipfire, 56 fully aimed) — the ADS read-out.
+      get cameraFov() { return render.camera.fov; },
+      // Move a bot for tests (resets it to a hold at the new spot).
+      teleportBot(i, x, z) {
+        const b = state.bots[i];
+        if (!b) return;
+        b.x = x; b.z = z;
+        b.state = 'hold';
+        b.holdPos = { x, z };
+        b.waypoints = [{ x, z }];
+        b.wpIndex = 0;
+      },
       startMatch,
       startRound,
       shootOnce() { if (state.phase === 'playing') playerShoot(); },
@@ -981,7 +1024,13 @@ export function createGame(deps) {
       forceRoundEnd(winner, reason) { endRound(winner, reason || 'Debug — forced round end'); },
       killAllEnemies() {
         for (const b of state.bots) {
-          if (b.team === 'jackals') { b.hp = 0; b.alive = false; b.state = 'dead'; }
+          if (b.team === 'jackals') {
+            b.hp = 0; b.alive = false; b.state = 'dead';
+            // Credit the player: the round-win frame reads as a round the
+            // player actually won, with a top-fragger recap instead of "no kills".
+            state.kills += 1;
+            state.roundKills += 1;
+          }
         }
       },
       plantSpike(siteId) {

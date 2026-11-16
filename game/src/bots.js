@@ -10,7 +10,7 @@
 // they wind up (0.6 s, standing still) and lob it — the throw is telegraphed in the
 // killfeed so the player can move.
 import { CFG, botLoadout } from './config.js';
-import { LANES, HOLDS, SPAWNS, SITES, moveCircle, losClear, insideSite } from './map.js';
+import { LANES, HOLDS, SPAWNS, SITES, STAGING, SITE_ENTRANCE, moveCircle, losClear, insideSite } from './map.js';
 import { createWeapon, damageAt } from './weapons.js';
 import { range, pick, chance } from './random.js';
 
@@ -62,6 +62,10 @@ export function createBots(rng, round, playerTeam) {
       // Grenades: attackers may carry one frag from round 2 on.
       frags: attacking && round >= CFG.botFragRounds && chance(rng, CFG.botFragChance) ? 1 : 0,
       fragCooldownUntil: 0, windupUntil: 0, windupTarget: null,
+      // Smokes: defenders may carry one smoke from round 3 on, spent on the retake.
+      smokes: !attacking && round >= CFG.botSmokeRounds && chance(rng, CFG.botSmokeChance) ? 1 : 0,
+      // Regroup: rally at the site staging point before pushing in together.
+      regroupUntil: 0, regrouped: false, rallyTarget: null,
     };
     if (attacking) {
       bot.lane = lanes[i % 4];
@@ -158,6 +162,13 @@ function teamCounts(ctx) {
   return { allies, enemies };
 }
 
+// Living bots on one team (the player is not a bot; callers add them if needed).
+function aliveOnTeam(ctx, team) {
+  let n = 0;
+  for (const b of ctx.bots) if (b.alive && b.team === team) n += 1;
+  return n;
+}
+
 // Bot accuracy: falls with distance, and the target being harder to hit helps.
 function hitChance(rng, bot, target, dist) {
   const moving = target.kind === 'player'
@@ -184,7 +195,11 @@ function strafeStep(bot, ctx, dt) {
   const dir = bot.strafeDir * (backing ? -1 : 1);
   const sx = Math.cos(bot.yaw) * dir;
   const sz = -Math.sin(bot.yaw) * dir;
-  moveCircle(bot, CFG.playerRadius, sx * CFG.botSpeed * 0.55 * dt, sz * CFG.botSpeed * 0.55 * dt);
+  const step = CFG.botSpeed * 0.55;
+  moveCircle(bot, CFG.playerRadius, sx * step * dt, sz * step * dt);
+  // Expose the strafe velocity so the renderer can swing the legs.
+  bot.vx = sx * step;
+  bot.vz = sz * step;
 }
 
 // One burst of fire at the visible target: bursts of 3-5 shots with pauses between,
@@ -299,16 +314,36 @@ export function stepBots(bots, ctx, dt) {
     }
 
     // Objective: attackers plant when their site is clear; defenders defuse when safe.
+    // A planted spike sends defenders to it — but not one by one. With a living
+    // teammate, a defender rallies at the site staging point first and pushes in
+    // together (see the 'regroup' handler); a lone defender goes straight in.
     if (ctx.spike.planted && !bot.attacking) {
       const spike = ctx.spike;
       const d = Math.hypot(spike.x - bot.x, spike.z - bot.z);
       if (d < 2.2 && !nearestVisible(bot, ctx)) {
         bot.state = 'defuse';
         bot.channelKind = 'defuse';
-      } else if (bot.state !== 'rotate' || bot.wpIndex >= bot.waypoints.length) {
-        bot.state = 'rotate';
-        bot.waypoints = routeToPoint(bot, spike.x, spike.z);
-        bot.wpIndex = 0;
+      } else if (bot.state !== 'regroup' && (bot.state !== 'rotate' || bot.wpIndex >= bot.waypoints.length)) {
+        // A living teammate (a bot, or the player when the bot fights for
+        // Vanguard) is what makes a rally worth waiting for.
+        const teammates = aliveOnTeam(ctx, bot.team)
+          + (bot.team === 'vanguard' && ctx.player.alive ? 1 : 0);
+        if (!bot.regrouped && teammates >= 2) {
+          const staging = STAGING[spike.site.id];
+          if (Math.hypot(staging.x - bot.x, staging.z - bot.z) > 3) {
+            bot.state = 'rotate';
+            bot.waypoints = [{ x: staging.x, z: staging.z }];
+            bot.wpIndex = 0;
+            bot.rallyTarget = spike.site.id;
+          } else {
+            bot.state = 'regroup';
+            bot.regroupUntil = now + CFG.regroupWait;
+          }
+        } else {
+          bot.state = 'rotate';
+          bot.waypoints = routeToPoint(bot, spike.x, spike.z);
+          bot.wpIndex = 0;
+        }
       }
     }
     if (bot.state === 'defuse') {
@@ -351,6 +386,29 @@ export function stepBots(bots, ctx, dt) {
       continue;
     }
 
+    // Regroup: wait at the staging point until a teammate is close, or the wait
+    // runs out — then push to the spike together. If the spike is gone (defused
+    // or detonated) the rally is off and the bot goes back to holding.
+    if (bot.state === 'regroup') {
+      if (!ctx.spike.planted) {
+        bot.state = 'hold';
+        bot.regrouped = false;
+        bot.rallyTarget = null;
+        continue;
+      }
+      const staging = STAGING[ctx.spike.site.id];
+      const teammateNear = ctx.bots.some((o) => o !== bot && o.alive && o.team === bot.team
+        && Math.hypot(o.x - staging.x, o.z - staging.z) < CFG.regroupRadius);
+      if (teammateNear || now >= bot.regroupUntil) {
+        bot.regrouped = true;
+        bot.rallyTarget = null;
+        bot.state = 'rotate';
+        bot.waypoints = routeToPoint(bot, ctx.spike.x, ctx.spike.z);
+        bot.wpIndex = 0;
+      }
+      continue;
+    }
+
     // Retreat: fall back for a couple of seconds, then re-engage from cover.
     if (bot.state === 'retreat') {
       const wp = bot.waypoints[bot.wpIndex];
@@ -389,6 +447,13 @@ export function stepBots(bots, ctx, dt) {
     if (bot.state === 'route' || bot.state === 'rotate') {
       const wp = bot.waypoints[bot.wpIndex];
       if (!wp) {
+        // Arrived at the rally point: wait for a teammate, then push together.
+        if (bot.rallyTarget && !bot.regrouped && ctx.spike.planted && !bot.attacking) {
+          bot.rallyTarget = null;
+          bot.state = 'regroup';
+          bot.regroupUntil = now + CFG.regroupWait;
+          continue;
+        }
         if (bot.attacking && bot.site && insideSite(bot.x, bot.z, bot.site)) {
           // Reached the site: plant if it is clear, else hold the edge.
           if (!nearestVisible(bot, ctx) && !ctx.spike.planted) {
@@ -404,6 +469,21 @@ export function stepBots(bots, ctx, dt) {
           bot.holdPos = bot.holdPos || { x: bot.x, z: bot.z };
         }
         continue;
+      }
+      // Retake smoke: a defending bot with a smoke spends it at the site
+      // entrance while pushing in, so the planter's sightline is blocked.
+      // One cloud per entrance — a second bot holds its smoke if the entrance
+      // is already covered.
+      if (bot.state === 'rotate' && ctx.spike.planted && !bot.attacking && bot.smokes > 0) {
+        const site = ctx.spike.site;
+        if (Math.hypot(site.x - bot.x, site.z - bot.z) < CFG.botSmokeRange) {
+          const entrance = SITE_ENTRANCE[site.id];
+          const covered = ctx.smokes.some((s) => Math.hypot(s.x - entrance.x, s.z - entrance.z) < 4);
+          if (!covered) {
+            bot.smokes -= 1;
+            actions.push({ type: 'throw', bot, kind: 'smoke', tx: entrance.x, tz: entrance.z });
+          }
+        }
       }
       // Rotating to a planted spike is urgent: move faster than patrol speed.
       const speed = bot.state === 'rotate' && ctx.spike.planted ? CFG.botRotateSpeed : CFG.botSpeed;

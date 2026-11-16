@@ -70,7 +70,7 @@ export function createRender(container, minimapCanvas, opts = {}) {
   renderer.setPixelRatio(lowFx ? 1 : Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.shadowMap.enabled = !lowFx;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.type = THREE.PCFShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.08;
   container.appendChild(renderer.domElement);
@@ -313,11 +313,12 @@ export function createRender(container, minimapCanvas, opts = {}) {
   }
 
   // Site markers: glowing ground rings + floating letters read from the minimap too.
+  // Each site keeps its own colour (A teal, B amber) so a callout matches the yard.
   for (const key of Object.keys(SITES)) {
     const s = SITES[key];
     const ring = new THREE.Mesh(
       new THREE.RingGeometry(s.r - 0.25, s.r, 40),
-      new THREE.MeshBasicMaterial({ color: 0x2fd4c4, transparent: true, opacity: 0.55, side: THREE.DoubleSide }),
+      new THREE.MeshBasicMaterial({ color: s.color, transparent: true, opacity: 0.55, side: THREE.DoubleSide }),
     );
     ring.rotation.x = -Math.PI / 2;
     ring.position.set(s.x, 0.03, s.z);
@@ -363,7 +364,7 @@ export function createRender(container, minimapCanvas, opts = {}) {
     const legR = new THREE.Mesh(legGeo, darkMat);
     legR.position.set(0.13, 0.25, 0);
     g.add(body, head, visor, gun, legL, legR);
-    return { group: g, body, head, visor, teamMat, wasAlive: undefined };
+    return { group: g, body, head, visor, legL, legR, teamMat, wasAlive: undefined, walkPhase: 0 };
   }
   for (let i = 0; i < 7; i += 1) {
     const view = buildBotFigure();
@@ -543,6 +544,10 @@ export function createRender(container, minimapCanvas, opts = {}) {
 
   const mm = minimapCanvas ? minimapCanvas.getContext('2d') : null;
   let slowmo = false;
+  // Aim-down-sights: 0 is hipfire, 1 is fully aimed. The target comes from the
+  // sim each frame (main.js); updateFx eases toward it so the zoom is smooth.
+  let adsTarget = 0;
+  let adsF = 0;
 
   return {
     renderer, scene, camera, hitMeshes,
@@ -556,12 +561,22 @@ export function createRender(container, minimapCanvas, opts = {}) {
       camera.position.set(x, y, z);
       camera.rotation.set(pitch, yaw, 0, 'YXZ');
     },
-    updateBots(bots) {
+    updateBots(bots, dt = 1 / 60) {
       for (let i = 0; i < bots.length; i += 1) {
         const bot = bots[i];
         const view = botGroups[i];
         view.group.visible = true;
-        view.group.position.set(bot.x, bot.alive ? 0 : 0.35, bot.z);
+        // Walk cycle: the legs swing with distance travelled and the body bobs
+        // a touch, so a moving bot reads as walking instead of gliding. Only
+        // the moving states swing — a planting, defusing or holding bot stands.
+        const movingState = bot.state === 'route' || bot.state === 'rotate'
+          || bot.state === 'engage' || bot.state === 'retreat' || bot.state === 'peek';
+        const speed = movingState ? Math.hypot(bot.vx || 0, bot.vz || 0) : 0;
+        view.walkPhase += speed * dt * 2.4;
+        const swing = Math.sin(view.walkPhase) * 0.55;
+        view.legL.rotation.x = swing;
+        view.legR.rotation.x = -swing;
+        view.group.position.set(bot.x, bot.alive ? Math.abs(Math.sin(view.walkPhase)) * 0.04 : 0.35, bot.z);
         view.group.rotation.set(bot.alive ? 0 : -Math.PI / 2 + 0.12, bot.yaw, 0);
         const color = TEAMS[bot.team].color;
         view.teamMat.color.setHex(color);
@@ -582,9 +597,26 @@ export function createRender(container, minimapCanvas, opts = {}) {
       recoil = Math.min(0.09, recoil + kick);
     },
     setSlowmo(on) { slowmo = on; },
+    setAdsTarget(f) { adsTarget = f ? 1 : 0; },
     updateFx(dt, now) {
       // Round-end slow motion: effects decay at a third of their pace.
       const fdt = slowmo ? dt * 0.35 : dt;
+      // Aim-down-sights: ease the field of view in and pull the viewmodel (and
+      // the muzzle flash with it) to the centre of the screen, so aiming feels
+      // like raising the gun instead of a snap. Recoil still pushes the gun back.
+      if (adsF !== adsTarget) {
+        const step = fdt * 9;
+        adsF += Math.abs(adsTarget - adsF) <= step ? adsTarget - adsF : Math.sign(adsTarget - adsF) * step;
+        camera.fov = 74 - (74 - CFG.adsFov) * adsF;
+        camera.updateProjectionMatrix();
+      }
+      viewmodel.position.set(
+        0.3 * (1 - adsF),
+        -0.28 + 0.095 * adsF,
+        -0.68 + 0.13 * adsF + recoil,
+      );
+      flash.position.set(0.3 * (1 - adsF), -0.26 + 0.095 * adsF, -1.05);
+      flashLight.position.set(0.3 * (1 - adsF), -0.2 + 0.05 * adsF, -1.1);
       if (flashLife > 0) {
         flashLife -= fdt;
         if (flashLife <= 0) {
@@ -596,7 +628,6 @@ export function createRender(container, minimapCanvas, opts = {}) {
       }
       if (recoil > 0) {
         recoil = Math.max(0, recoil - fdt * 0.35);
-        viewmodel.position.z = -0.68 + recoil;
       }
       for (const t of tracers) {
         if (t.life > 0) {
@@ -658,12 +689,12 @@ export function createRender(container, minimapCanvas, opts = {}) {
       }
       for (const key of Object.keys(SITES)) {
         const s = SITES[key];
-        mm.strokeStyle = '#2fd4c4';
+        mm.strokeStyle = s.css;
         mm.lineWidth = 1.5;
         mm.beginPath();
         mm.arc(px(s.x), pz(s.z), s.r * sx, 0, Math.PI * 2);
         mm.stroke();
-        mm.fillStyle = '#2fd4c4';
+        mm.fillStyle = s.css;
         mm.font = 'bold 10px sans-serif';
         mm.fillText(key, px(s.x) - 3, pz(s.z) + 3);
       }

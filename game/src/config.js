@@ -16,6 +16,10 @@ export const CFG = {
   startMoney: 800,
   winBonus: 300,
   lossBonus: 150,
+  // Loss streak: consecutive round losses pay more each time (150 / 200 / 250 /
+  // 300), so a team on a losing run can still afford a rifle and force-buy back
+  // into the match instead of ecoing forever. The streak resets on any round win.
+  lossBonusStreak: [150, 200, 250, 300],
   killBonus: 100,
   plantBonus: 200,
   defuseBonus: 200,
@@ -44,6 +48,23 @@ export const CFG = {
   botFragRange: 14, // a bot only throws at a known position inside this distance
   botFragCooldown: 9, // seconds between one bot's throws
   botFragWindup: 0.6, // seconds the bot stands still before the throw lands
+  // Bot smokes: defenders carry one smoke from round 3 on and spend it on the
+  // retake — thrown at the site entrance when the spike is planted, so the
+  // planter's sightline is blocked while the defenders push in together.
+  botSmokeRounds: 3, // earliest round a bot may carry a smoke
+  botSmokeChance: 0.5, // chance a defending bot spawns with one
+  botSmokeRange: 14, // a bot only throws at a site inside this distance
+  // Regroup: when the spike is planted, defenders do not trickle in one by one.
+  // They rally at the site's staging point and push together once a teammate is
+  // close, or after a short wait — whichever comes first.
+  regroupWait: 3.5, // seconds a defender waits at staging for a teammate
+  regroupRadius: 9, // a teammate this close to staging ends the wait
+  // Aim-down-sights: right mouse. Tighter spread, steadier look, slower move,
+  // narrower field of view — the deliberate-aim trade-off.
+  adsFov: 56, // camera field of view while aiming (hipfire is 74)
+  adsSpreadMult: 0.55, // spread multiplier while aiming
+  adsSpeedMult: 0.65, // move-speed multiplier while aiming
+  adsLookMult: 0.6, // look-sensitivity multiplier while aiming
   // Peeking: a holding bot leans out toward a position it recently saw, fires if it
   // gets line of sight, then pulls back to its hold.
   peekHoldMin: 0.9, // seconds out of cover
