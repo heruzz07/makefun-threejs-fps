@@ -209,13 +209,14 @@
   .buy-price { font-family: var(--font-readout); color: var(--amber); }
   .buy-hint { margin-top: 12px; font-size: 12px; color: var(--muted); }
 
-  /* Title / pause / match-end overlay. */
+  /* Title / pause / match-end overlay. Flex + margin auto: a tall panel
+     scrolls from the top instead of clipping (the menu panel carries the map). */
   .overlay {
-    position: fixed; inset: 0; display: grid; place-items: center; padding: 24px;
-    background: rgba(20, 22, 31, .82);
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px;
+    background: rgba(20, 22, 31, .82); overflow-y: auto;
   }
   .panel {
-    width: min(480px, 100%); padding: 32px;
+    width: min(480px, 100%); padding: 28px; margin: auto;
     background: var(--surface); border: 1px solid var(--hairline);
     border-radius: var(--radius-panel);
   }
@@ -223,6 +224,25 @@
   .panel h1 .dust { color: var(--amber); }
   .panel p { margin: 0 0 20px; font-size: 15px; line-height: 1.55; color: var(--muted); }
   #overlay-stats { margin: 0 0 20px; font-family: var(--font-readout); font-size: 13px; color: var(--ink); }
+  /* Menu map overview: the yard at a glance (menu only). */
+  #menu-map {
+    width: 100%; height: auto; display: block;
+    border: 1px solid var(--hairline); border-radius: var(--radius-panel);
+    background: #141a2a; margin-bottom: 8px;
+  }
+  #menu-map-legend {
+    font-size: 11px; color: var(--muted); letter-spacing: .06em;
+    font-family: var(--font-readout); margin-bottom: 16px;
+  }
+  /* Match-end scoreboard: one row per combatant, MVP starred. */
+  #overlay-scoreboard { margin: 0 0 20px; font-family: var(--font-readout); font-size: 13px; }
+  .sb-row { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; border-bottom: 1px solid var(--hairline); }
+  .sb-row .sb-rank { width: 20px; color: var(--muted); }
+  .sb-row .sb-name { flex: 1; }
+  .sb-row b.vanguard { color: var(--accent); }
+  .sb-row b.jackals { color: var(--enemy); }
+  .sb-row .sb-kills { color: var(--ink); }
+  .sb-row .sb-mvp { color: var(--amber); font-weight: 700; }
   #play {
     font: inherit; font-weight: 600; padding: 12px 18px; white-space: nowrap;
     border: 1px solid var(--accent); border-radius: var(--radius-control);
@@ -289,8 +309,11 @@
 <div id="overlay" class="overlay">
   <section class="panel" role="dialog" aria-modal="true" aria-labelledby="overlay-title">
     <h1 id="overlay-title"><span class="dust">DUST</span>LINE</h1>
-    <p id="overlay-copy">A round-based tactical FPS in an abandoned solar yard at dusk. Four versus four, first to five rounds. Plant the spike — or stop it.</p>
+    <p id="overlay-copy">Round-based tactical FPS in a solar yard at dusk. 4v4, first to 5 rounds. Plant the spike — or stop it.</p>
     <p id="overlay-stats"></p>
+    <canvas id="menu-map" width="416" height="240"></canvas>
+    <div id="menu-map-legend">THE YARD — A ARRAY (teal) · B PUMP (amber) · ▲ attack spawn · ▼ defend spawn</div>
+    <div id="overlay-scoreboard" hidden></div>
     <button id="play" type="button">Click to play</button>
     <ul class="keys">
       <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move · <kbd>Ctrl</kbd>/<kbd>C</kbd> Crouch</li>
