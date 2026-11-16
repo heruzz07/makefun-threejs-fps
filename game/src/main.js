@@ -24,6 +24,9 @@ const render = createRender(
   document.getElementById('minimap'),
   { lowFx },
 );
+// Menu map overview: drawn once at boot (the canvas keeps it while the overlay
+// is hidden and shown again).
+render.drawMenuMap(document.getElementById('menu-map'));
 const audio = createAudio();
 const input = createInput(render.dom, onLockChange);
 const game = createGame({ render, input, audio, rng });

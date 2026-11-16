@@ -7,9 +7,13 @@
 // sun + cool fill lighting, more map dressing (pipes along the Vent, floodlight poles,
 // panel frames, the pump tank), a muzzle-flash point light, glow-paired tracers, visible
 // grenades in flight, and a slow-motion hook for round ends.
+//
+// v3: pooled impact bursts where shots land (seeded velocities, so the screenshot
+// states stay deterministic) and the menu map overview (drawMenuMap: the yard as a
+// 2D schematic — lanes, sites, spawns — on the title screen).
 import * as THREE from 'three';
 import { CFG, TEAMS } from './config.js';
-import { COLLIDERS, SITES } from './map.js';
+import { COLLIDERS, SITES, SPAWNS, PLAYER_SPAWN, LANES } from './map.js';
 import { mulberry32 } from './random.js';
 
 const KIND_COLORS = {
@@ -469,6 +473,61 @@ export function createRender(container, minimapCanvas, opts = {}) {
     t.life = 0.09;
   }
 
+  // --- impact bursts (pooled THREE.Points: spark/dust where a shot lands) -----
+  // One Points cloud per burst slot. Velocities are precomputed from a seeded
+  // rng per slot, so the same burst sequence renders identically every run
+  // (the screenshot states stay deterministic). Visual only — never feeds the sim.
+  const IMPACTS = 10;
+  const IMPACT_N = 16;
+  const impacts = [];
+  for (let i = 0; i < IMPACTS; i += 1) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(IMPACT_N * 3), 3));
+    const mat = new THREE.PointsMaterial({
+      color: 0xffffff, size: 0.14, transparent: true, opacity: 0,
+      blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true,
+    });
+    const pts = new THREE.Points(geo, mat);
+    pts.frustumCulled = false;
+    pts.visible = false;
+    scene.add(pts);
+    // Fixed per-slot velocities: an up-biased cone, a few fast sparks, mostly dust.
+    const vrng = mulberry32(101 + i * 7919);
+    const vels = [];
+    for (let j = 0; j < IMPACT_N; j += 1) {
+      const a = vrng() * Math.PI * 2;
+      const sp = 1.2 + vrng() * 2.6;
+      vels.push({ x: Math.cos(a) * sp, y: 1.0 + vrng() * 2.4, z: Math.sin(a) * sp });
+    }
+    impacts.push({ pts, geo, mat, vels, vel: null, life: 0, maxLife: 0.4 });
+  }
+  let impactCursor = 0;
+  function spawnImpact(x, y, z, color = 0xd8b878, big = false) {
+    const b = impacts[impactCursor];
+    impactCursor = (impactCursor + 1) % impacts.length;
+    const pos = b.geo.attributes.position.array;
+    const spread = big ? 0.25 : 0.08;
+    for (let j = 0; j < IMPACT_N; j += 1) {
+      pos[j * 3] = x + ((j % 3) - 1) * spread * 0.3;
+      pos[j * 3 + 1] = y + (j % 2) * spread * 0.2;
+      pos[j * 3 + 2] = z + (((j + 1) % 3) - 1) * spread * 0.3;
+    }
+    b.geo.attributes.position.needsUpdate = true;
+    // Fresh velocity copy: the base table stays pristine for the next reuse.
+    b.vel = b.vels.map((v) => ({ x: v.x, y: v.y, z: v.z }));
+    b.mat.color.setHex(color);
+    b.mat.size = big ? 0.18 : 0.14;
+    b.maxLife = big ? 0.6 : 0.4;
+    b.life = b.maxLife;
+    b.pts.visible = true;
+    b.mat.opacity = 0.95;
+  }
+  function impactsActive() {
+    let n = 0;
+    for (const b of impacts) if (b.life > 0) n += 1;
+    return n;
+  }
+
   // --- grenades in flight (pooled spheres with a blinking red lamp) --------------
   const grenadeMeshes = [];
   for (let i = 0; i < 8; i += 1) {
@@ -637,6 +696,23 @@ export function createRender(container, minimapCanvas, opts = {}) {
           t.glow.material.opacity = k * 0.5;
         }
       }
+      for (const b of impacts) {
+        if (b.life > 0) {
+          b.life -= fdt;
+          const pos = b.geo.attributes.position.array;
+          for (let j = 0; j < IMPACT_N; j += 1) {
+            const v = b.vel[j];
+            pos[j * 3] += v.x * fdt;
+            pos[j * 3 + 1] += v.y * fdt;
+            pos[j * 3 + 2] += v.z * fdt;
+            v.y -= 9.8 * fdt;
+            if (pos[j * 3 + 1] < 0.03) { pos[j * 3 + 1] = 0.03; v.y = 0; v.x *= 0.6; v.z *= 0.6; }
+          }
+          b.geo.attributes.position.needsUpdate = true;
+          b.mat.opacity = 0.95 * Math.max(0, b.life / b.maxLife);
+          if (b.life <= 0) b.pts.visible = false;
+        }
+      }
       for (const s of smokes) {
         if (s.life > 0) {
           s.life -= fdt;
@@ -664,6 +740,107 @@ export function createRender(container, minimapCanvas, opts = {}) {
       }
     },
     spawnTracer,
+    spawnImpact,
+    impactsActive,
+    // Menu map overview: a static schematic of The Yard on a 2D canvas — walls,
+    // lanes, sites in their colours, spawns. Drawn once at boot; pure DOM, the
+    // sim never sees it.
+    drawMenuMap(canvas) {
+      const g = canvas.getContext('2d');
+      if (!g) return;
+      const W = canvas.width;
+      const H = canvas.height;
+      const s = Math.min(W / CFG.mapW, H / CFG.mapD);
+      const ox = (W - CFG.mapW * s) / 2;
+      const oy = (H - CFG.mapD * s) / 2;
+      const px = (x) => ox + (x + CFG.mapW / 2) * s;
+      const pz = (z) => oy + (z + CFG.mapD / 2) * s;
+      g.fillStyle = '#141a2a';
+      g.fillRect(0, 0, W, H);
+      // Lanes: dashed routes the attackers take (A-long, B-long, Connector, Vent).
+      g.strokeStyle = 'rgba(236,229,211,0.4)';
+      g.lineWidth = 1.5;
+      g.setLineDash([5, 4]);
+      const lanePaths = {
+        A: LANES.A,
+        B: LANES.B,
+        mid: LANES.mid.concat(LANES.midToA),
+        vent: LANES.vent.concat(LANES.ventToA),
+      };
+      for (const key of Object.keys(lanePaths)) {
+        const pts = lanePaths[key];
+        g.beginPath();
+        pts.forEach((p, i) => {
+          if (i === 0) g.moveTo(px(p.x), pz(p.z));
+          else g.lineTo(px(p.x), pz(p.z));
+        });
+        g.stroke();
+      }
+      g.setLineDash([]);
+      // Colliders as blocks.
+      g.fillStyle = '#3a4152';
+      for (const c of COLLIDERS) {
+        g.fillRect(px(c.x0), pz(c.z0), (c.x1 - c.x0) * s, (c.z1 - c.z0) * s);
+      }
+      // Map border.
+      g.strokeStyle = '#2c3247';
+      g.lineWidth = 1;
+      g.strokeRect(px(-32), pz(-24), CFG.mapW * s, CFG.mapD * s);
+      // Sites: coloured rings + letters + names.
+      for (const key of Object.keys(SITES)) {
+        const st = SITES[key];
+        g.strokeStyle = st.css;
+        g.lineWidth = 2;
+        g.beginPath();
+        g.arc(px(st.x), pz(st.z), st.r * s, 0, Math.PI * 2);
+        g.stroke();
+        g.fillStyle = st.css;
+        g.font = `bold ${Math.max(11, s * 1.6)}px sans-serif`;
+        g.textAlign = 'center';
+        g.textBaseline = 'middle';
+        g.fillText(key, px(st.x), pz(st.z));
+        g.font = 'bold 10px sans-serif';
+        g.fillText(st.name.toUpperCase(), px(st.x), pz(st.z) + st.r * s + 10);
+      }
+      // Spawns: attack triangles (teal) south, defend triangles (orange) north.
+      const tri = (x, z, color, up) => {
+        g.fillStyle = color;
+        g.beginPath();
+        if (up) {
+          g.moveTo(px(x), pz(z) - 5);
+          g.lineTo(px(x) + 4.5, pz(z) + 4);
+          g.lineTo(px(x) - 4.5, pz(z) + 4);
+        } else {
+          g.moveTo(px(x), pz(z) + 5);
+          g.lineTo(px(x) + 4.5, pz(z) - 4);
+          g.lineTo(px(x) - 4.5, pz(z) - 4);
+        }
+        g.closePath();
+        g.fill();
+      };
+      for (const sp of SPAWNS.attack) tri(sp.x, sp.z, '#2fd4c4', true);
+      for (const sp of SPAWNS.defend) tri(sp.x, sp.z, '#e86a2c', false);
+      // Player spawn: white ring.
+      g.strokeStyle = '#ffffff';
+      g.lineWidth = 1.5;
+      g.beginPath();
+      g.arc(px(PLAYER_SPAWN.attack.x), pz(PLAYER_SPAWN.attack.z), 5, 0, Math.PI * 2);
+      g.stroke();
+      // Lane labels + compass in the side margins.
+      g.fillStyle = 'rgba(236,229,211,0.75)';
+      g.font = '10px sans-serif';
+      g.textAlign = 'center';
+      g.fillText('A-LONG', px(27), pz(8));
+      g.fillText('B-LONG', px(-27), pz(8));
+      g.fillText('MID', px(0), pz(2));
+      g.fillText('VENT', px(10.5), pz(-2));
+      g.fillText('ATTACK SPAWN', px(0), pz(22.5));
+      g.fillText('DEFEND SPAWN', px(0), pz(-22.5));
+      g.fillStyle = 'rgba(236,229,211,0.6)';
+      g.font = 'bold 12px sans-serif';
+      g.textAlign = 'left';
+      g.fillText('N ↑', W - 26, 16);
+    },
     addSmoke,
     updateGrenades,
     setSpike(x, z, on) {

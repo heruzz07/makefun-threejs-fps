@@ -9,6 +9,10 @@
 // the round banner, a grenade indicator and reload bar in the HUD, and a spike
 // countdown bar under the top bar. The Longshot DMR joins the buy menu as key 5.
 //
+// v3: impact bursts where shots land (gold sparks on a bot, dust on the yard),
+// a match-end scoreboard with MVP, and the menu map overview (see render.js /
+// index.html). Cumulative match kills are tracked for the scoreboard.
+//
 // The fixed step is a thin dispatcher: step() routes to one handler per phase, and
 // the playing phase is split into small handlers (move / act / channel / projectiles
 // / spike / bots / elimination) so each has one job and the hot path stays readable.
@@ -49,6 +53,7 @@ export function createGame(deps) {
     score: { vanguard: 0, jackals: 0 },
     money: CFG.startMoney,
     kills: 0, deaths: 0,
+    matchKills: {}, // cumulative kills per combatant this match (scoreboard)
     lossStreak: 0, // consecutive rounds lost (drives the loss-streak bonus)
     roundKills: 0, // player kills this round (for the round-end recap)
     roundBotKills: {}, // bot name -> kills this round
@@ -215,6 +220,15 @@ export function createGame(deps) {
     $('overlay-copy').textContent = copy;
     $('overlay-stats').textContent = stats || '';
     $('play').textContent = kind === 'matchEnd' ? 'Play again' : kind === 'pause' ? 'Resume' : 'Click to play';
+    // The map overview belongs to the menu only (pause / match-end hide it).
+    const showMap = kind === 'menu' || kind === 'start';
+    const mm = $('menu-map');
+    if (mm) mm.hidden = !showMap;
+    const ml = $('menu-map-legend');
+    if (ml) ml.hidden = !showMap;
+    // The scoreboard is filled in by endMatch after this call; never show a stale one.
+    const sb = $('overlay-scoreboard');
+    if (sb) sb.hidden = true;
     ov.hidden = false;
   }
 
@@ -230,6 +244,7 @@ export function createGame(deps) {
     state.money = CFG.startMoney;
     state.kills = 0;
     state.deaths = 0;
+    state.matchKills = {};
     state.lossStreak = 0;
     state.roundKills = 0;
     state.roundBotKills = {};
@@ -334,6 +349,18 @@ export function createGame(deps) {
         : `Jackals take the match ${state.score.jackals}–${state.score.vanguard}. The Yard holds.`,
       `Rounds ${state.score.vanguard}–${state.score.jackals}  •  Kills ${state.kills}  •  Deaths ${state.deaths}`,
     );
+    // Match scoreboard: every combatant's kills this match, MVP starred.
+    const sb = $('overlay-scoreboard');
+    if (sb) {
+      const rows = [{ name: 'You', team: 'vanguard', kills: state.matchKills.You || 0 }];
+      for (const b of state.bots) {
+        rows.push({ name: b.name, team: b.team, kills: state.matchKills[b.name] || 0 });
+      }
+      rows.sort((a, b) => b.kills - a.kills);
+      const top = rows.length && rows[0].kills > 0 ? rows[0].name : null;
+      sb.innerHTML = rows.map((r, i) => `<div class="sb-row"><span class="sb-rank">${i + 1}</span><span class="sb-name"><b class="${r.team}">${r.name}</b></span><span class="sb-kills">${r.kills} kill${r.kills === 1 ? '' : 's'}</span>${r.name === top ? '<span class="sb-mvp">★ MVP</span>' : ''}</div>`).join('');
+      sb.hidden = false;
+    }
     if (won) audio.win(); else audio.lose();
   }
 
@@ -394,8 +421,10 @@ export function createGame(deps) {
       raycaster.set(fromV, d2);
       const hits = raycaster.intersectObjects(render.hitMeshes, false);
       const hit = hits[0];
+      let pelletHitBot = false;
       if (hit && hit.object.userData.bot && hit.object.userData.bot.alive) {
         const bot = hit.object.userData.bot;
+        pelletHitBot = true;
         const head = hit.object.userData.part === 'head';
         const dist = hit.distance;
         let dmg = damageAt(w.def, dist, head);
@@ -412,6 +441,7 @@ export function createGame(deps) {
           anyKill = true;
           state.kills += 1;
           state.roundKills += 1;
+          state.matchKills.You = (state.matchKills.You || 0) + 1;
           state.money += CFG.killBonus;
           killfeedAdd(`<b class="you">You</b> ▸ <b class="${bot.team}">${bot.name}</b>${head ? ' <span class="hs">HEADSHOT</span>' : ''}`);
         }
@@ -419,6 +449,9 @@ export function createGame(deps) {
         const end = traceEnd(fromV.x, fromV.y, fromV.z, d2.x, d2.y, d2.z, 60);
         toV.set(end.x, end.y, end.z);
       }
+      // Impact burst where the first pellet lands: bright gold sparks on a bot,
+      // dust on the yard (gold reads against the orange Jackal bodies).
+      if (i === 0) render.spawnImpact(toV.x, toV.y, toV.z, pelletHitBot ? 0xffd27a : 0xd8b878);
       render.spawnTracer({ x: fromV.x, y: fromV.y, z: fromV.z }, { x: toV.x, y: toV.y, z: toV.z });
     }
     render.muzzleFlash(w.def.kick);
@@ -470,6 +503,7 @@ export function createGame(deps) {
       bot.hp = 0;
       bot.alive = false;
       bot.state = 'dead';
+      state.matchKills[killerName] = (state.matchKills[killerName] || 0) + 1;
       if (killerName !== 'You') {
         state.roundBotKills[killerName] = (state.roundBotKills[killerName] || 0) + 1;
       }
@@ -479,6 +513,7 @@ export function createGame(deps) {
 
   function explodeGrenade(g) {
     audio.explode();
+    render.spawnImpact(g.x, 0.6, g.z, 0xff7a2a, true);
     const targets = [];
     if (state.player.alive) targets.push({ kind: 'player', x: state.player.x, z: state.player.z });
     for (const b of state.bots) if (b.alive) targets.push({ kind: 'bot', ref: b, x: b.x, z: b.z });
@@ -806,6 +841,7 @@ export function createGame(deps) {
             ? { x: p.x, y: p.y + p.eye - 0.25, z: p.z }
             : { x: a.missX, y: p.y + p.eye - 0.25, z: a.missZ };
           render.spawnTracer(from, to, 0xff9a5a);
+          render.spawnImpact(to.x, to.y, to.z, a.hit ? 0xffd27a : 0xd8b878);
           audio.shot(b.weapon.def.id);
           if (a.hit) damagePlayer(a.dmg, b.x, b.z);
         } else {
@@ -814,6 +850,7 @@ export function createGame(deps) {
             ? { x: tb.x, y: 1.2, z: tb.z }
             : { x: a.missX, y: 1.2, z: a.missZ };
           render.spawnTracer(from, to, 0xff9a5a);
+          render.spawnImpact(to.x, to.y, to.z, a.hit ? 0xffd27a : 0xd8b878);
           audio.shot(b.weapon.def.id);
           if (a.hit) damageBot(tb, a.dmg, b.name, b.team);
         }
@@ -1006,6 +1043,8 @@ export function createGame(deps) {
       startMatch,
       startRound,
       shootOnce() { if (state.phase === 'playing') playerShoot(); },
+      // Impact bursts currently alive (render-only; for tests).
+      impactsActive() { return render.impactsActive(); },
       // Advance the fixed-step sim synchronously (test hook: lets a test drive the
       // sim in sim-time instead of waiting on wall-clock frames).
       stepSim(n = 1) { for (let i = 0; i < n; i += 1) step(FIXED_STEP); },
@@ -1030,6 +1069,7 @@ export function createGame(deps) {
             // player actually won, with a top-fragger recap instead of "no kills".
             state.kills += 1;
             state.roundKills += 1;
+            state.matchKills.You = (state.matchKills.You || 0) + 1;
           }
         }
       },

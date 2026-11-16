@@ -62,7 +62,7 @@ export function runShot(name, ctx) {
     game.showOverlay(
       'start',
       'DUSTLINE',
-      'A round-based tactical FPS in an abandoned solar yard at dusk. Four versus four, first to five rounds. Plant the spike — or stop it.',
+      'Round-based tactical FPS in a solar yard at dusk. 4v4, first to 5 rounds. Plant the spike — or stop it.',
       'WASD move  •  Mouse look  •  Click fire  •  R reload  •  E plant / defuse  •  B buy  •  G grenade',
     );
   } else if (name === 'play') {
@@ -78,11 +78,14 @@ export function runShot(name, ctx) {
     placeBot(enemies[2], 6, -14);
     placeBot(allies[0], 5, 6);
     // Give the player the rifle (same factory as the buy menu) and fire one aimed
-    // round at the first Jackal.
+    // round at the first Jackal. The camera must be re-settled AFTER aiming:
+    // the shot reads the camera's world direction, so aiming first and then
+    // settling is what makes the staged round actually land (v3 fix — in r2
+    // the settle ran before the aim and the round sailed past the bot).
     state.player.slots[1] = createWeapon('vk7');
     state.player.slot = 1;
-    settleCamera();
     dbg.aimAt(enemies[0].x, 1.3, enemies[0].z);
+    settleCamera();
     render.scene.updateMatrixWorld(true);
     dbg.shootOnce();
     // The hitmarker fades after 120 ms, but the frozen shot is captured later:
